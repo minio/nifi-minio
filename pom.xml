@@ -55,7 +55,8 @@
         <nifi.registry.version>0.4.0</nifi.registry.version>
         <jersey.version>2.26</jersey.version>
         <spring.version>4.3.19.RELEASE</spring.version>
-        <spring.security.version>4.2.8.RELEASE</spring.security.version>        
+        <spring.security.version>4.2.8.RELEASE</spring.security.version>
+        <minio.version>6.0.6</minio.version>
     </properties>
     <repositories>
         <repository>
@@ -82,32 +83,32 @@
                 <enabled>false</enabled>
             </snapshots>
         </repository>
-    </repositories>    
+    </repositories>
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-framework-core</artifactId>
-            <version>1.9.2</version>                      
-        </dependency>      
+            <version>1.9.2</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-framework-core-api</artifactId>
-            <version>1.9.2</version>                      
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-properties-loader</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-api</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-framework-api</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -137,22 +138,22 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-properties</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-site-to-site</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.2.3</version>            
+            <version>1.2.3</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-framework-cluster-protocol</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -162,7 +163,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-client-dto</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -172,7 +173,7 @@
         <dependency>
             <groupId>org.apache.nifi</groupId>
             <artifactId>nifi-framework-authorization</artifactId>
-            <version>1.9.2</version>            
+            <version>1.9.2</version>
         </dependency>
         <dependency>
             <groupId>org.quartz-scheduler</groupId>
@@ -186,7 +187,7 @@
                     <groupId>c3p0</groupId>
                     <artifactId>c3p0</artifactId>
                 </exclusion>
-            </exclusions>            
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
@@ -209,6 +210,11 @@
             <version>1.9.2</version>
         </dependency>
         <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>${minio.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-core</artifactId>
             <version>${spring.version}</version>
@@ -219,7 +225,7 @@
                     <groupId>commons-logging</groupId>
                     <artifactId>commons-logging</artifactId>
                 </exclusion>
-            </exclusions>            
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
@@ -351,6 +357,21 @@
             <plugin>
                 <groupId>org.apache.rat</groupId>
                 <artifactId>apache-rat-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.nifi</groupId>
+                <artifactId>nifi-nar-maven-plugin</artifactId>
+                <version>1.1.0</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <id>default-nar</id>
+                        <phase>package</phase>
+                        <goals>
+                           <goal>nar</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
