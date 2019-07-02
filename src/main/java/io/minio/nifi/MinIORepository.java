@@ -15,6 +15,7 @@
  */
 package io.minio.nifi;
 
+import java.net.URI;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -26,6 +27,8 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -56,7 +59,6 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
-
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.controller.repository.ContentNotFoundException;
@@ -78,6 +80,8 @@ import org.apache.nifi.util.StopWatch;
 import org.apache.nifi.util.file.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.collect.ImmutableMap;
 
 /**
  * Is thread safe
@@ -133,12 +137,18 @@ public class MinIORepository implements ContentRepository {
     // guarded by synchronizing on this
     private final AtomicLong oldestArchiveDate = new AtomicLong(0L);
 
+    Map<String, ?> env = ImmutableMap.<String, Object> builder()
+        .put(com.upplication.s3fs.AmazonS3Factory.ACCESS_KEY, "minio")
+        .put(com.upplication.s3fs.AmazonS3Factory.SECRET_KEY, "minio123")
+        .put(com.upplication.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
+
+    private final FileSystem s3fs;
     private final NiFiProperties nifiProperties;
 
     /**
      * Default no args constructor for service loading only
      */
-    public MinIORepository() {
+    public MinIORepository() throws IOException {
         containers = null;
         containerNames = null;
         index = null;
@@ -150,15 +160,22 @@ public class MinIORepository implements ContentRepository {
         maxAppendableClaimLength = 0;
         maxFlowFilesPerClaim = 0;
         writableClaimQueue = null;
+        s3fs = null;
     }
 
     public MinIORepository(final NiFiProperties nifiProperties) throws IOException {
         this.nifiProperties = nifiProperties;
+        this.s3fs = FileSystems.newFileSystem(URI.create("s3://localhost:9000/"),
+                                              env, Thread.currentThread().getContextClassLoader());
+
         // determine the file repository paths and ensure they exist
-        final Map<String, Path> fileRespositoryPaths = nifiProperties.getContentRepositoryPaths();
-        for (final Path path : fileRespositoryPaths.values()) {
+        final Map<String, Path> fileRepositoryPaths = new HashMap<>();
+        for (final Map.Entry<String, Path> entry : nifiProperties.getContentRepositoryPaths().entrySet()) {
+            Path path = this.s3fs.getPath(entry.getValue().normalize().toString());
+            fileRepositoryPaths.put(entry.getKey(), path);
             Files.createDirectories(path);
         }
+
         this.maxFlowFilesPerClaim = nifiProperties.getMaxFlowFilesPerClaim();
         this.writableClaimQueue  = new LinkedBlockingQueue<>(maxFlowFilesPerClaim);
         final long configuredAppendableClaimLength = DataUnit.parseDataSize(nifiProperties.getMaxAppendableClaimSize(), DataUnit.B).longValue();
@@ -174,7 +191,7 @@ public class MinIORepository implements ContentRepository {
             this.maxAppendableClaimLength = configuredAppendableClaimLength;
         }
 
-        this.containers = new HashMap<>(fileRespositoryPaths);
+        this.containers = new HashMap<>(fileRepositoryPaths);
         this.containerNames = new ArrayList<>(containers.keySet());
         index = new AtomicLong(0L);
 
@@ -259,10 +276,8 @@ public class MinIORepository implements ContentRepository {
     public void initialize(final ResourceClaimManager claimManager) {
         this.resourceClaimManager = claimManager;
 
-        final Map<String, Path> fileRespositoryPaths = nifiProperties.getContentRepositoryPaths();
-
         executor.scheduleWithFixedDelay(new BinDestructableClaims(), 1, 1, TimeUnit.SECONDS);
-        for (int i = 0; i < fileRespositoryPaths.size(); i++) {
+        for (int i = 0; i < containers.size(); i++) {
             executor.scheduleWithFixedDelay(new ArchiveOrDestroyDestructableClaims(), 1, 1, TimeUnit.SECONDS);
         }
 
@@ -423,13 +438,7 @@ public class MinIORepository implements ContentRepository {
 
     @Override
     public long getContainerUsableSpace(String containerName) throws IOException {
-        final Path path = containers.get(containerName);
-
-        if (path == null) {
-            throw new IllegalArgumentException("No container exists with name " + containerName);
-        }
-
-        return FileUtils.getContainerUsableSpace(path);
+        return -1L;
     }
 
     @Override
