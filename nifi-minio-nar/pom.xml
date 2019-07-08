@@ -37,6 +37,12 @@
             <artifactId>nifi-minio-controller</artifactId>
             <version>1.0.0</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.nifi</groupId>
+            <artifactId>nifi-framework-nar</artifactId>
+            <version>1.9.2</version>
+            <type>nar</type>
+        </dependency>
     </dependencies>
 
 </project>

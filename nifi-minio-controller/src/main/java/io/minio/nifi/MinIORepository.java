@@ -140,6 +140,7 @@ public class MinIORepository implements ContentRepository {
     Map<String, ?> env = ImmutableMap.<String, Object> builder()
         .put(com.upplication.s3fs.AmazonS3Factory.ACCESS_KEY, "minio")
         .put(com.upplication.s3fs.AmazonS3Factory.SECRET_KEY, "minio123")
+        .put(com.upplication.s3fs.AmazonS3Factory.PROTOCOL, "HTTP")
         .put(com.upplication.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
 
     private final FileSystem s3fs;
