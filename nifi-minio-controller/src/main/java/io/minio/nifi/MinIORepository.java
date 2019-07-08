@@ -31,6 +31,7 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.DirectoryStream;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -173,7 +174,7 @@ public class MinIORepository implements ContentRepository {
         final Map<String, Path> fileRepositoryPaths = new HashMap<>();
         for (final Map.Entry<String, Path> entry : nifiProperties.getContentRepositoryPaths().entrySet()) {
             Path path = this.s3fs.getPath(entry.getValue().normalize().toString());
-            fileRepositoryPaths.put(entry.getKey(), path);
+            fileRepositoryPaths.put(entry.toString(), path);
             Files.createDirectories(path);
         }
 
@@ -239,18 +240,17 @@ public class MinIORepository implements ContentRepository {
 
         if (maxArchiveRatio > 0D) {
             for (final Map.Entry<String, Path> container : containers.entrySet()) {
-                final String containerName = container.getKey();
+                final String containerName = container.toString();
 
-                final long capacity = container.getValue().toFile().getTotalSpace();
+                final long capacity = -1L;
                 if(capacity==0) {
                     throw new RuntimeException("System returned total space of the partition for " + containerName + " is zero byte. Nifi can not create a zero sized MinIORepository");
                 }
                 final long maxArchiveBytes = (long) (capacity * (1D - (maxArchiveRatio - 0.02)));
-                minUsableContainerBytesForArchive.put(container.getKey(), Long.valueOf(maxArchiveBytes));
-                LOG.info("Maximum Threshold for Container {} set to {} bytes; if volume exceeds this size, archived data will be deleted until it no longer exceeds this size",
-                        containerName, maxArchiveBytes);
+                minUsableContainerBytesForArchive.put(container.toString(), Long.valueOf(maxArchiveBytes));
+                LOG.info("Maximum Threshold for Container {} set to {} bytes; if volume exceeds this size, archived data will be deleted until it no longer exceeds this size", containerName, maxArchiveBytes);
 
-                final long backPressureBytes = (long) (container.getValue().toFile().getTotalSpace() * archiveBackPressureRatio);
+                final long backPressureBytes = (long) (capacity * archiveBackPressureRatio);
                 final ContainerState containerState = new ContainerState(containerName, true, backPressureBytes, capacity);
                 containerStateMap.put(containerName, containerState);
             }
@@ -458,11 +458,12 @@ public class MinIORepository implements ContentRepository {
             final String containerName = entry.getKey();
             final Path containerPath = entry.getValue();
 
-            final File[] sectionFiles = containerPath.toFile().listFiles();
-            if (sectionFiles != null) {
-                for (final File sectionFile : sectionFiles) {
-                    removeIncompleteContent(containerName, containerPath, sectionFile.toPath());
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(containerPath)) {
+                for (Path path : stream) {
+                    removeIncompleteContent(containerName, containerPath, path);
                 }
+            } catch (IOException e) {
+                ;
             }
         }
     }
@@ -470,16 +471,19 @@ public class MinIORepository implements ContentRepository {
     private void removeIncompleteContent(final String containerName, final Path containerPath, final Path fileToRemove) {
         if (Files.isDirectory(fileToRemove)) {
             final Path lastPathName = fileToRemove.subpath(1, fileToRemove.getNameCount());
-            final String fileName = lastPathName.toFile().getName();
+            final String fileName = lastPathName.toString();
             if (fileName.equals(ARCHIVE_DIR_NAME)) {
                 return;
             }
 
-            final File[] children = fileToRemove.toFile().listFiles();
-            if (children != null) {
-                for (final File child : children) {
-                    removeIncompleteContent(containerName, containerPath, child.toPath());
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(containerPath)) {
+                for (Path entry : stream) {
+                    if (!Files.isDirectory(entry)) {
+                        removeIncompleteContent(containerName, containerPath, entry);
+                    }
                 }
+            } catch (IOException e) {
+                ;
             }
 
             return;
@@ -492,8 +496,8 @@ public class MinIORepository implements ContentRepository {
         }
 
         final Path idPath = relativePath.subpath(1, relativePath.getNameCount());
-        final String id = idPath.toFile().getName();
-        final String sectionName = sectionPath.toFile().getName();
+        final String id = idPath.toString();
+        final String sectionName = sectionPath.toString();
 
         final ResourceClaim resourceClaim = resourceClaimManager.newResourceClaim(containerName, sectionName, id, false, false);
         if (resourceClaimManager.getClaimantCount(resourceClaim) == 0) {
@@ -504,9 +508,9 @@ public class MinIORepository implements ContentRepository {
     private void removeIncompleteContent(final Path fileToRemove) {
         String fileDescription = null;
         try {
-            fileDescription = fileToRemove.toFile().getAbsolutePath() + " (" + Files.size(fileToRemove) + " bytes)";
+            fileDescription = fileToRemove.toAbsolutePath() + " (" + Files.size(fileToRemove) + " bytes)";
         } catch (final IOException e) {
-            fileDescription = fileToRemove.toFile().getAbsolutePath() + " (unknown file size)";
+            fileDescription = fileToRemove.toAbsolutePath() + " (unknown file size)";
         }
 
         LOG.info("Found unknown file {} in File System Repository; {} file", fileDescription, archiveData ? "archiving" : "removing");
@@ -602,7 +606,7 @@ public class MinIORepository implements ContentRepository {
             // at the same time because we will call create() to get the claim before we write to it,
             // and when we call create(), it will remove it from the Queue, which means that no other
             // thread will get the same Claim until we've finished writing to it.
-            final File file = getPath(resourceClaim).toFile();
+            final File file = new File(getPath(resourceClaim).toString());
             ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(new FileOutputStream(file, true), file.length());
             writableClaimStreams.put(resourceClaim, claimStream);
 
@@ -686,7 +690,7 @@ public class MinIORepository implements ContentRepository {
             }
         }
 
-        final File file = path.toFile();
+        final File file = new File(path.toString());
         if (!file.delete() && file.exists()) {
             LOG.warn("Unable to delete {} at path {}", new Object[]{claim, path});
             return false;
@@ -768,7 +772,7 @@ public class MinIORepository implements ContentRepository {
         }
 
         try (final InputStream in = read(claim);
-                final FileOutputStream fos = new FileOutputStream(destination.toFile(), append)) {
+             final FileOutputStream fos = new FileOutputStream(new File(destination.toString()), append)) {
             final long copied = StreamUtils.copy(in, fos);
             if (alwaysSync) {
                 fos.getFD().sync();
@@ -797,7 +801,7 @@ public class MinIORepository implements ContentRepository {
         }
 
         try (final InputStream in = read(claim);
-                final FileOutputStream fos = new FileOutputStream(destination.toFile(), append)) {
+             final FileOutputStream fos = new FileOutputStream(new File(destination.toString()), append)) {
             if (offset > 0) {
                 StreamUtils.skip(in, offset);
             }
@@ -864,8 +868,7 @@ public class MinIORepository implements ContentRepository {
         if (claim == null) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        final Path path = getPath(claim, true);
-        final FileInputStream fis = new FileInputStream(path.toFile());
+        final FileInputStream fis = new FileInputStream(new File(getPath(claim, true).toString()));
         if (claim.getOffset() > 0L) {
             try {
                 StreamUtils.skip(fis, claim.getOffset());
@@ -1066,7 +1069,7 @@ public class MinIORepository implements ContentRepository {
 
         for (final Path path : containers.values()) {
             if (!Files.exists(path)) {
-                throw new RepositoryPurgeException("File " + path.toFile().getAbsolutePath() + " does not exist");
+                throw new RepositoryPurgeException("File " + path.toAbsolutePath() + " does not exist");
             }
 
             // Try up to 10 times to see if the directory is writable, in case another process (like a
@@ -1084,7 +1087,7 @@ public class MinIORepository implements ContentRepository {
                 }
             }
             if (!writable) {
-                throw new RepositoryPurgeException("File " + path.toFile().getAbsolutePath() + " is not writable");
+                throw new RepositoryPurgeException("File " + path.toAbsolutePath() + " is not writable");
             }
         }
 
@@ -1254,7 +1257,7 @@ public class MinIORepository implements ContentRepository {
     }
 
     private long getLastModTime(final Path file) throws IOException {
-        return getLastModTime(file.toFile());
+        return getLastModTime(file);
     }
 
     private boolean deleteBasedOnTimestamp(final BlockingQueue<ArchiveInfo> fileQueue, final long removalTimeThreshold) throws IOException {
@@ -1379,10 +1382,9 @@ public class MinIORepository implements ContentRepository {
                             try {
                                 Files.deleteIfExists(file);
                                 containerState.decrementArchiveCount();
-                                LOG.debug("Deleted archived ContentClaim with ID {} from Container {} because it was older than the configured max archival duration",
-                                        file.toFile().getName(), containerName);
+                                LOG.debug("Deleted archived ContentClaim with ID {} from Container {} because it was older than the configured max archival duration", file.toString(), containerName);
                             } catch (final IOException ioe) {
-                                LOG.warn("Failed to remove archived ContentClaim with ID {} from Container {} due to {}", file.toFile().getName(), containerName, ioe.toString());
+                                LOG.warn("Failed to remove archived ContentClaim with ID {} from Container {} due to {}", file.toString(), containerName, ioe.toString());
                                 if (LOG.isDebugEnabled()) {
                                     LOG.warn("", ioe);
                                 }
@@ -1479,7 +1481,7 @@ public class MinIORepository implements ContentRepository {
                     final List<ResourceClaim> toRemove = new ArrayList<>();
                     for (final Map.Entry<String, BlockingQueue<ResourceClaim>> entry : reclaimable.entrySet()) {
                         // drain the queue of all ContentClaims that can be destroyed for the given container.
-                        final String container = entry.getKey();
+                        final String container = entry.toString();
                         final ContainerState containerState = containerStateMap.get(container);
 
                         toRemove.clear();
@@ -1543,7 +1545,7 @@ public class MinIORepository implements ContentRepository {
         public ArchiveInfo(final Path containerPath, final Path path, final long size, final long lastModTime) {
             this.containerPath = containerPath;
             this.relativePath = containerPath.relativize(path).toString();
-            this.name = path.toFile().getName();
+            this.name = path.toString();
             this.size = size;
             this.lastModTime = lastModTime;
         }
