@@ -17,12 +17,9 @@ package io.minio.nifi;
 
 import java.net.URI;
 import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -127,7 +124,6 @@ public class MinIORepository implements ContentRepository {
     private final int maxFlowFilesPerClaim;
     private final long maxArchiveMillis;
     private final Map<String, Long> minUsableContainerBytesForArchive = new HashMap<>();
-    private final boolean alwaysSync;
     private final ScheduledExecutorService containerCleanupExecutor;
 
     private ResourceClaimManager resourceClaimManager; // effectively final
@@ -138,10 +134,10 @@ public class MinIORepository implements ContentRepository {
     // guarded by synchronizing on this
     private final AtomicLong oldestArchiveDate = new AtomicLong(0L);
 
-    Map<String, ?> env = ImmutableMap.<String, Object> builder()
-        .put(com.upplication.s3fs.AmazonS3Factory.ACCESS_KEY, "minio")
-        .put(com.upplication.s3fs.AmazonS3Factory.SECRET_KEY, "minio123")
-        .put(com.upplication.s3fs.AmazonS3Factory.PROTOCOL, "HTTP")
+    Map<String, ?> s3Env = ImmutableMap.<String, Object> builder()
+        .put(com.upplication.s3fs.AmazonS3Factory.ACCESS_KEY, "Q3AM3UQ867SPQQA43P2F")
+        .put(com.upplication.s3fs.AmazonS3Factory.SECRET_KEY, "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG")
+        .put(com.upplication.s3fs.AmazonS3Factory.PROTOCOL, "HTTPS")
         .put(com.upplication.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
 
     private final FileSystem s3fs;
@@ -156,7 +152,6 @@ public class MinIORepository implements ContentRepository {
         index = null;
         archiveData = false;
         maxArchiveMillis = 0;
-        alwaysSync = false;
         containerCleanupExecutor = null;
         nifiProperties = null;
         maxAppendableClaimLength = 0;
@@ -167,8 +162,8 @@ public class MinIORepository implements ContentRepository {
 
     public MinIORepository(final NiFiProperties nifiProperties) throws IOException {
         this.nifiProperties = nifiProperties;
-        this.s3fs = FileSystems.newFileSystem(URI.create("s3://localhost:9000/"),
-                                              env, Thread.currentThread().getContextClassLoader());
+        this.s3fs = FileSystems.newFileSystem(URI.create("s3://play.min.io/"),
+                                              s3Env, Thread.currentThread().getContextClassLoader());
 
         // determine the file repository paths and ensure they exist
         final Map<String, Path> fileRepositoryPaths = new HashMap<>();
@@ -266,10 +261,7 @@ public class MinIORepository implements ContentRepository {
             maxArchiveMillis = StringUtils.isEmpty(maxArchiveRetentionPeriod) ? Long.MAX_VALUE : FormatUtils.getTimeDuration(maxArchiveRetentionPeriod, TimeUnit.MILLISECONDS);
         }
 
-        this.alwaysSync = Boolean.parseBoolean(nifiProperties.getProperty("nifi.content.repository.always.sync"));
-        LOG.info("Initializing MinIORepository with 'Always Sync' set to {}", alwaysSync);
         initializeRepository();
-
         containerCleanupExecutor = new FlowEngine(containers.size(), "Cleanup MinIORepository Container", true);
     }
 
@@ -330,14 +322,7 @@ public class MinIORepository implements ContentRepository {
             final String containerName = container.getKey();
             final ContainerState containerState = containerStateMap.get(containerName);
             final Path containerPath = container.getValue();
-            final boolean pathExists = Files.exists(containerPath);
-
-            final Path realPath;
-            if (pathExists) {
-                realPath = containerPath.toRealPath();
-            } else {
-                realPath = Files.createDirectories(containerPath).toRealPath();
-            }
+            final Path realPath = Files.createDirectories(containerPath).toRealPath();
 
             for (int i = 0; i < SECTIONS_PER_CONTAINER; i++) {
                 Files.createDirectories(realPath.resolve(String.valueOf(i)));
@@ -389,9 +374,7 @@ public class MinIORepository implements ContentRepository {
             };
 
             // If the path didn't exist to begin with, there's no archive directory, so don't bother scanning.
-            if (pathExists) {
-                futures.add(executor.submit(scanContainer));
-            }
+            futures.add(executor.submit(scanContainer));
         }
 
         executor.shutdown();
@@ -428,8 +411,7 @@ public class MinIORepository implements ContentRepository {
         }
 
         long capacity = FileUtils.getContainerCapacity(path);
-
-        if(capacity==0) {
+        if (capacity==0) {
             throw new IOException("System returned total space of the partition for " + containerName + " is zero byte. "
                     + "Nifi can not create a zero sized MinIORepository.");
         }
@@ -606,8 +588,8 @@ public class MinIORepository implements ContentRepository {
             // at the same time because we will call create() to get the claim before we write to it,
             // and when we call create(), it will remove it from the Queue, which means that no other
             // thread will get the same Claim until we've finished writing to it.
-            final File file = new File(getPath(resourceClaim).toString());
-            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(new FileOutputStream(file, true), file.length());
+            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(Files.newOutputStream(getPath(resourceClaim)),
+                                                                                            Files.size(getPath(resourceClaim)));
             writableClaimStreams.put(resourceClaim, claimStream);
 
             incrementClaimantCount(resourceClaim, true);
@@ -690,12 +672,11 @@ public class MinIORepository implements ContentRepository {
             }
         }
 
-        final File file = new File(path.toString());
-        if (!file.delete() && file.exists()) {
-            LOG.warn("Unable to delete {} at path {}", new Object[]{claim, path});
-            return false;
+        try {
+            Files.deleteIfExists(path);
+        } catch (final IOException e) {
+            ;
         }
-
         return true;
     }
 
@@ -772,12 +753,8 @@ public class MinIORepository implements ContentRepository {
         }
 
         try (final InputStream in = read(claim);
-             final FileOutputStream fos = new FileOutputStream(new File(destination.toString()), append)) {
-            final long copied = StreamUtils.copy(in, fos);
-            if (alwaysSync) {
-                fos.getFD().sync();
-            }
-            return copied;
+             final OutputStream os = Files.newOutputStream(destination)) {
+            return StreamUtils.copy(in, os);
         }
     }
 
@@ -801,14 +778,11 @@ public class MinIORepository implements ContentRepository {
         }
 
         try (final InputStream in = read(claim);
-             final FileOutputStream fos = new FileOutputStream(new File(destination.toString()), append)) {
+             final OutputStream os = Files.newOutputStream(destination);) {
             if (offset > 0) {
                 StreamUtils.skip(in, offset);
             }
-            StreamUtils.copy(in, fos, length);
-            if (alwaysSync) {
-                fos.getFD().sync();
-            }
+            StreamUtils.copy(in, os, length);
             return length;
         }
     }
@@ -868,12 +842,12 @@ public class MinIORepository implements ContentRepository {
         if (claim == null) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        final FileInputStream fis = new FileInputStream(new File(getPath(claim, true).toString()));
+        final InputStream is = Files.newInputStream(getPath(claim, true));
         if (claim.getOffset() > 0L) {
             try {
-                StreamUtils.skip(fis, claim.getOffset());
+                StreamUtils.skip(is, claim.getOffset());
             } catch (IOException ioe) {
-                IOUtils.closeQuietly(fis);
+                IOUtils.closeQuietly(is);
                 throw ioe;
             }
 
@@ -888,9 +862,9 @@ public class MinIORepository implements ContentRepository {
         // InputStream for this claim, then read from it, write more to the claim, and then attempt to read again. In
         // such a case, since we have written to that same Claim, we should still be able to read those bytes.
         if (claim.getLength() >= 0) {
-            return new LimitedInputStream(fis, claim::getLength);
+            return new LimitedInputStream(is, claim::getLength);
         } else {
-            return fis;
+            return is;
         }
     }
 
@@ -994,10 +968,6 @@ public class MinIORepository implements ContentRepository {
             public synchronized void close() throws IOException {
                 closed = true;
 
-                if (alwaysSync) {
-                    ((FileOutputStream) bcos.getWrappedStream()).getFD().sync();
-                }
-
                 if (scc.getLength() < 0) {
                     // If claim was not written to, set length to 0
                     scc.setLength(0L);
@@ -1068,10 +1038,6 @@ public class MinIORepository implements ContentRepository {
         }
 
         for (final Path path : containers.values()) {
-            if (!Files.exists(path)) {
-                throw new RepositoryPurgeException("File " + path.toAbsolutePath() + " does not exist");
-            }
-
             // Try up to 10 times to see if the directory is writable, in case another process (like a
             // virus scanner) has the directory temporarily locked
             boolean writable = false;
@@ -1239,25 +1205,8 @@ public class MinIORepository implements ContentRepository {
         }
     }
 
-    private long getLastModTime(final File file) {
-        // the content claim identifier is created by concatenating System.currentTimeMillis(), "-", and a one-up number.
-        // However, it used to be just a one-up number. As a result, we can check for the timestamp and if present use it.
-        // If not present, we will use the last modified time.
-        final String filename = file.getName();
-        final int dashIndex = filename.indexOf("-");
-        if (dashIndex > 0) {
-            final String creationTimestamp = filename.substring(0, dashIndex);
-            try {
-                return Long.parseLong(creationTimestamp);
-            } catch (final NumberFormatException nfe) {
-            }
-        }
-
-        return file.lastModified();
-    }
-
     private long getLastModTime(final Path file) throws IOException {
-        return getLastModTime(file);
+        return Files.getLastModifiedTime(file).toMillis();
     }
 
     private boolean deleteBasedOnTimestamp(final BlockingQueue<ArchiveInfo> fileQueue, final long removalTimeThreshold) throws IOException {
