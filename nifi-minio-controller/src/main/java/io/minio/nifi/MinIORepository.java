@@ -470,8 +470,7 @@ public class MinIORepository implements ContentRepository {
             // at the same time because we will call create() to get the claim before we write to it,
             // and when we call create(), it will remove it from the Queue, which means that no other
             // thread will get the same Claim until we've finished writing to it.
-            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(Files.newOutputStream(getPath(resourceClaim)),
-                                                                                            Files.size(getPath(resourceClaim)));
+            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(Files.newOutputStream(getPath(resourceClaim)));
             writableClaimStreams.put(resourceClaim, claimStream);
 
             incrementClaimantCount(resourceClaim, true);
