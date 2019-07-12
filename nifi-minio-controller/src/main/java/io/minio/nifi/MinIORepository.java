@@ -135,10 +135,10 @@ public class MinIORepository implements ContentRepository {
     private final AtomicLong oldestArchiveDate = new AtomicLong(0L);
 
     Map<String, ?> s3Env = ImmutableMap.<String, Object> builder()
-        .put(com.upplication.s3fs.AmazonS3Factory.ACCESS_KEY, "Q3AM3UQ867SPQQA43P2F")
-        .put(com.upplication.s3fs.AmazonS3Factory.SECRET_KEY, "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG")
-        .put(com.upplication.s3fs.AmazonS3Factory.PROTOCOL, "HTTPS")
-        .put(com.upplication.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
+        .put(io.minio.nifi.s3fs.AmazonS3Factory.ACCESS_KEY, "Q3AM3UQ867SPQQA43P2F")
+        .put(io.minio.nifi.s3fs.AmazonS3Factory.SECRET_KEY, "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG")
+        .put(io.minio.nifi.s3fs.AmazonS3Factory.PROTOCOL, "HTTPS")
+        .put(io.minio.nifi.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
 
     private final FileSystem s3fs;
     private final NiFiProperties nifiProperties;

@@ -1,0 +1,2 @@
+# if not present, FileSystems.newFileSystem throw NotProviderFoundException
+io.minio.nifi.s3fs.S3FileSystemProvider

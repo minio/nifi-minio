@@ -29,6 +29,7 @@
     <packaging>pom</packaging>
 
     <modules>
+        <module>nifi-minio-s3fs</module>
         <module>nifi-minio-controller</module>
         <module>nifi-minio-nar</module>
     </modules>
