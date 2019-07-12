@@ -198,21 +198,8 @@ public class MinIORepository implements ContentRepository {
         }
 
         final String enableArchiving = nifiProperties.getProperty(NiFiProperties.CONTENT_ARCHIVE_ENABLED);
-        final String maxArchiveRetentionPeriod = nifiProperties.getProperty(NiFiProperties.CONTENT_ARCHIVE_MAX_RETENTION_PERIOD);
-        final String maxArchiveSize = nifiProperties.getProperty(NiFiProperties.CONTENT_ARCHIVE_MAX_USAGE_PERCENTAGE);
-        final String archiveBackPressureSize = nifiProperties.getProperty(NiFiProperties.CONTENT_ARCHIVE_BACK_PRESSURE_PERCENTAGE);
-
         if ("true".equalsIgnoreCase(enableArchiving)) {
             archiveData = true;
-
-            if (maxArchiveSize == null) {
-                throw new RuntimeException("No value specified for property '"
-                        + NiFiProperties.CONTENT_ARCHIVE_MAX_USAGE_PERCENTAGE + "' but archiving is enabled. You must configure the max disk usage in order to enable archiving.");
-            }
-
-            if (!MAX_ARCHIVE_SIZE_PATTERN.matcher(maxArchiveSize.trim()).matches()) {
-                throw new RuntimeException("Invalid value specified for the '" + NiFiProperties.CONTENT_ARCHIVE_MAX_USAGE_PERCENTAGE + "' property. Value must be in format: <XX>%");
-            }
         } else if ("false".equalsIgnoreCase(enableArchiving)) {
             archiveData = false;
         } else {
@@ -223,44 +210,14 @@ public class MinIORepository implements ContentRepository {
         double maxArchiveRatio = 0D;
         double archiveBackPressureRatio = 0.01D;
 
-        if (maxArchiveSize != null && MAX_ARCHIVE_SIZE_PATTERN.matcher(maxArchiveSize.trim()).matches()) {
-            maxArchiveRatio = getRatio(maxArchiveSize);
-
-            if (archiveBackPressureSize != null && MAX_ARCHIVE_SIZE_PATTERN.matcher(archiveBackPressureSize.trim()).matches()) {
-                archiveBackPressureRatio = getRatio(archiveBackPressureSize);
-            } else {
-                archiveBackPressureRatio = maxArchiveRatio + 0.02D;
-            }
+        for (final String containerName : containerNames) {
+            containerStateMap.put(containerName, new ContainerState(containerName,
+                                                                    false,
+                                                                    Long.MAX_VALUE,
+                                                                    Long.MAX_VALUE));
         }
 
-        if (maxArchiveRatio > 0D) {
-            for (final Map.Entry<String, Path> container : containers.entrySet()) {
-                final String containerName = container.toString();
-
-                final long capacity = -1L;
-                if(capacity==0) {
-                    throw new RuntimeException("System returned total space of the partition for " + containerName + " is zero byte. Nifi can not create a zero sized MinIORepository");
-                }
-                final long maxArchiveBytes = (long) (capacity * (1D - (maxArchiveRatio - 0.02)));
-                minUsableContainerBytesForArchive.put(container.toString(), Long.valueOf(maxArchiveBytes));
-                LOG.info("Maximum Threshold for Container {} set to {} bytes; if volume exceeds this size, archived data will be deleted until it no longer exceeds this size", containerName, maxArchiveBytes);
-
-                final long backPressureBytes = (long) (capacity * archiveBackPressureRatio);
-                final ContainerState containerState = new ContainerState(containerName, true, backPressureBytes, capacity);
-                containerStateMap.put(containerName, containerState);
-            }
-        } else {
-            for (final String containerName : containerNames) {
-                containerStateMap.put(containerName, new ContainerState(containerName, false, Long.MAX_VALUE, Long.MAX_VALUE));
-            }
-        }
-
-        if (maxArchiveRatio <= 0D) {
-            maxArchiveMillis = 0L;
-        } else {
-            maxArchiveMillis = StringUtils.isEmpty(maxArchiveRetentionPeriod) ? Long.MAX_VALUE : FormatUtils.getTimeDuration(maxArchiveRetentionPeriod, TimeUnit.MILLISECONDS);
-        }
-
+        maxArchiveMillis = 0L;
         initializeRepository();
         containerCleanupExecutor = new FlowEngine(containers.size(), "Cleanup MinIORepository Container", true);
     }
