@@ -327,7 +327,6 @@ public class MinIORepository implements ContentRepository {
                     removeIncompleteContent(containerName, containerPath, path);
                 }
             } catch (IOException e) {
-                ;
             }
         }
     }
@@ -347,7 +346,6 @@ public class MinIORepository implements ContentRepository {
                     }
                 }
             } catch (IOException e) {
-                ;
             }
 
             return;
@@ -370,14 +368,9 @@ public class MinIORepository implements ContentRepository {
     }
 
     private void removeIncompleteContent(final Path fileToRemove) {
-        String fileDescription = null;
-        try {
-            fileDescription = fileToRemove.toAbsolutePath() + " (" + Files.size(fileToRemove) + " bytes)";
-        } catch (final IOException e) {
-            fileDescription = fileToRemove.toAbsolutePath() + " (unknown file size)";
-        }
-
-        LOG.info("Found unknown file {} in File System Repository; {} file", fileDescription, archiveData ? "archiving" : "removing");
+        String fileDescription = fileToRemove.toAbsolutePath().toString();
+        LOG.info("Found unknown file {} in File System Repository; {} file",
+                 fileDescription, archiveData ? "archiving" : "removing");
 
         try {
             if (archiveData) {
@@ -387,7 +380,8 @@ public class MinIORepository implements ContentRepository {
             }
         } catch (final IOException e) {
             final String action = archiveData ? "archive" : "remove";
-            LOG.warn("Unable to {} unknown file {} from File System Repository due to {}", action, fileDescription, e.toString());
+            LOG.warn("Unable to {} unknown file {} from File System Repository due to {}",
+                     action, fileDescription, e.toString());
             LOG.warn("", e);
         }
     }
@@ -556,7 +550,6 @@ public class MinIORepository implements ContentRepository {
         try {
             Files.deleteIfExists(path);
         } catch (final IOException e) {
-            ;
         }
         return true;
     }
@@ -918,26 +911,6 @@ public class MinIORepository implements ContentRepository {
             FileUtils.deleteFilesInDir(path.toFile(), null, LOG, true);
         }
 
-        for (final Path path : containers.values()) {
-            // Try up to 10 times to see if the directory is writable, in case another process (like a
-            // virus scanner) has the directory temporarily locked
-            boolean writable = false;
-            for (int i = 0; i < 10; i++) {
-                if (Files.isWritable(path)) {
-                    writable = true;
-                    break;
-                } else {
-                    try {
-                        Thread.sleep(100L);
-                    } catch (final Exception e) {
-                    }
-                }
-            }
-            if (!writable) {
-                throw new RepositoryPurgeException("File " + path.toAbsolutePath() + " is not writable");
-            }
-        }
-
         resourceClaimManager.purge();
     }
 
@@ -1087,6 +1060,18 @@ public class MinIORepository implements ContentRepository {
     }
 
     private long getLastModTime(final Path file) throws IOException {
+        // the content claim identifier is created by concatenating System.currentTimeMillis(), "-", and a one-up number.
+        // However, it used to be just a one-up number. As a result, we can check for the timestamp and if present use it.
+        // If not present, we will use the last modified time.
+        final String filename = file.toString();
+        final int dashIndex = filename.indexOf("-");
+        if (dashIndex > 0) {
+            final String creationTimestamp = filename.substring(0, dashIndex);
+            try {
+                return Long.parseLong(creationTimestamp);
+            } catch (final NumberFormatException nfe) {
+            }
+        }
         return Files.getLastModifiedTime(file).toMillis();
     }
 
