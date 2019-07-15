@@ -318,72 +318,6 @@ public class MinIORepository implements ContentRepository {
 
     @Override
     public void cleanup() {
-        for (final Map.Entry<String, Path> entry : containers.entrySet()) {
-            final String containerName = entry.getKey();
-            final Path containerPath = entry.getValue();
-
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(containerPath)) {
-                for (Path path : stream) {
-                    removeIncompleteContent(containerName, containerPath, path);
-                }
-            } catch (IOException e) {
-            }
-        }
-    }
-
-    private void removeIncompleteContent(final String containerName, final Path containerPath, final Path fileToRemove) {
-        if (Files.isDirectory(fileToRemove)) {
-            final Path lastPathName = fileToRemove.subpath(1, fileToRemove.getNameCount());
-            final String fileName = lastPathName.toString();
-            if (fileName.equals(ARCHIVE_DIR_NAME)) {
-                return;
-            }
-
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(containerPath)) {
-                for (Path entry : stream) {
-                    if (!Files.isDirectory(entry)) {
-                        removeIncompleteContent(containerName, containerPath, entry);
-                    }
-                }
-            } catch (IOException e) {
-            }
-
-            return;
-        }
-
-        final Path relativePath = containerPath.relativize(fileToRemove);
-        final Path sectionPath = relativePath.subpath(0, 1);
-        if (relativePath.getNameCount() < 2) {
-            return;
-        }
-
-        final Path idPath = relativePath.subpath(1, relativePath.getNameCount());
-        final String id = idPath.toString();
-        final String sectionName = sectionPath.toString();
-
-        final ResourceClaim resourceClaim = resourceClaimManager.newResourceClaim(containerName, sectionName, id, false, false);
-        if (resourceClaimManager.getClaimantCount(resourceClaim) == 0) {
-            removeIncompleteContent(fileToRemove);
-        }
-    }
-
-    private void removeIncompleteContent(final Path fileToRemove) {
-        String fileDescription = fileToRemove.toAbsolutePath().toString();
-        LOG.info("Found unknown file {} in File System Repository; {} file",
-                 fileDescription, archiveData ? "archiving" : "removing");
-
-        try {
-            if (archiveData) {
-                archive(fileToRemove);
-            } else {
-                Files.delete(fileToRemove);
-            }
-        } catch (final IOException e) {
-            final String action = archiveData ? "archive" : "remove";
-            LOG.warn("Unable to {} unknown file {} from File System Repository due to {}",
-                     action, fileDescription, e.toString());
-            LOG.warn("", e);
-        }
     }
 
     private Path getPath(final ContentClaim claim) {
@@ -1315,31 +1249,5 @@ public class MinIORepository implements ContentRepository {
             final ClaimLengthPair other = (ClaimLengthPair) obj;
             return claim.equals(other.getClaim());
         }
-    }
-
-    /**
-     * Will determine the scheduling interval to be used by archive cleanup task
-     * (in milliseconds). This method will enforce the minimum allowed value of
-     * 1 second (1000 milliseconds). If attempt is made to set lower value a
-     * warning will be logged and the method will return minimum value of 1000
-     */
-    private long determineCleanupInterval(NiFiProperties properties) {
-        long cleanupInterval = MIN_CLEANUP_INTERVAL_MILLIS;
-        String archiveCleanupFrequency = properties.getProperty(NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
-        if (archiveCleanupFrequency != null) {
-            try {
-                cleanupInterval = FormatUtils.getTimeDuration(archiveCleanupFrequency.trim(), TimeUnit.MILLISECONDS);
-            } catch (Exception e) {
-                throw new RuntimeException(
-                        "Invalid value set for property " + NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY);
-            }
-            if (cleanupInterval < MIN_CLEANUP_INTERVAL_MILLIS) {
-                LOG.warn("The value of " + NiFiProperties.CONTENT_ARCHIVE_CLEANUP_FREQUENCY + " property is set to '"
-                        + archiveCleanupFrequency + "' which is "
-                        + "below the allowed minimum of 1 second (1000 milliseconds). Minimum value of 1 sec will be used as scheduling interval for archive cleanup task.");
-                cleanupInterval = MIN_CLEANUP_INTERVAL_MILLIS;
-            }
-        }
-        return cleanupInterval;
     }
 }
