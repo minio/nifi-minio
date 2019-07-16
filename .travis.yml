@@ -3,7 +3,16 @@ sudo: false
 language: java
 
 services:
-- docker
+  - docker
+
+script:
+  - mvn install -DskipTests=true -Dmaven.javadoc.skip=true -B -V
+  - mvn package
+
+addons:
+  artifacts:
+    paths:
+      - $(ls nifi-minio-nar/target/nifi-minio*.nar)
 
 cache:
   directories:
