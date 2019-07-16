@@ -92,20 +92,8 @@ public class S3Utils {
         String bucketName = s3Path.getFileStore().name();
 
         S3BasicFileAttributes attrs = toS3FileAttributes(objectSummary, key);
-        S3UserPrincipal userPrincipal = null;
-        Set<PosixFilePermission> permissions = null;
-
-        if (!attrs.isDirectory()) {
-            AmazonS3 client = s3Path.getFileSystem().getClient();
-            AccessControlList acl = client.getObjectAcl(bucketName, key);
-            Owner owner = acl.getOwner();
-
-            userPrincipal = new S3UserPrincipal(owner.getId() + ":" + owner.getDisplayName());
-            permissions = toPosixFilePermissions(acl.getGrantsAsList());
-        }
-
         return new S3PosixFileAttributes((String)attrs.fileKey(), attrs.lastModifiedTime(),
-                attrs.size(), attrs.isDirectory(), attrs.isRegularFile(), userPrincipal, null, permissions);
+                attrs.size(), attrs.isDirectory(), attrs.isRegularFile(), null, null, null);
     }
 
 

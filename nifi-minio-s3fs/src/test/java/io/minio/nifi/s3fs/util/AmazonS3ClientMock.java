@@ -298,28 +298,6 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
     }
 
     @Override
-    public AccessControlList getObjectAcl(String bucketName, String key) throws AmazonClientException {
-        Path elem = find(bucketName, key);
-        if (elem != null) {
-            try {
-                return parse(elem, find(bucketName)).getPermission();
-            } catch (IOException e) {
-                throw new AmazonServiceException("Problem getting mock ACL: ", e);
-            }
-        }
-        throw new AmazonServiceException("key not found, " + key);
-    }
-
-    @Override
-    public AccessControlList getBucketAcl(String bucketName) throws AmazonClientException {
-        Path bucket = find(bucketName);
-        if (bucket == null) {
-            throw new AmazonServiceException("bucket not found, " + bucketName);
-        }
-        return createAclPermission(bucket, bucketName);
-    }
-
-    @Override
     public S3Object getObject(String bucketName, String key) throws AmazonClientException {
         Path result = find(bucketName, key);
         if (result == null || !Files.exists(result)) {
@@ -450,9 +428,7 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
 
             object.setObjectContent(new ByteArrayInputStream(content));
             object.setObjectMetadata(metadata);
-            // TODO: create converter between path permission and s3 permission
-            AccessControlList permission = createAllPermission(bucketName);
-            return new S3Element(object, permission, false);
+            return new S3Element(object, false);
         } catch (IOException e) {
             throw new IllegalStateException("the stream is closed", e);
         }
@@ -480,121 +456,7 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
         }
 
         object.setObjectMetadata(metadata);
-        AccessControlList permission = createAclPermission(elem, bucketName);
-
-        return new S3Element(object, permission, dir);
-    }
-
-    /**
-     * create the com.amazonaws.services.s3.model.AccessControlList from a Path
-     *
-     * @param elem Path
-     * @param bucketName String
-     * @return AccessControlList never null
-     */
-    private AccessControlList createAclPermission(Path elem, String bucketName) {
-        AccessControlList res = new AccessControlList();
-        final Owner owner = getOwner(bucketName);
-        res.setOwner(owner);
-        Grantee grant = new Grantee() {
-            @Override
-            public void setIdentifier(String id) {
-                //
-            }
-
-            @Override
-            public String getTypeIdentifier() {
-                return owner.getId();
-            }
-
-            @Override
-            public String getIdentifier() {
-                return owner.getId();
-            }
-        };
-
-        try {
-            Set<PosixFilePermission> permission = Files.readAttributes(elem, PosixFileAttributes.class).permissions();
-            for (PosixFilePermission posixFilePermission : permission) {
-                switch (posixFilePermission) {
-                    case GROUP_READ:
-                    case OTHERS_READ:
-                    case OWNER_READ:
-                        res.grantPermission(grant, Permission.Read);
-                        break;
-                    case OWNER_WRITE:
-                    case GROUP_WRITE:
-                    case OTHERS_WRITE:
-                        res.grantPermission(grant, Permission.Write);
-                        break;
-                    case OWNER_EXECUTE:
-                    case GROUP_EXECUTE:
-                    case OTHERS_EXECUTE:
-                        res.grantPermission(grant, Permission.WriteAcp);
-                        res.grantPermission(grant, Permission.ReadAcp);
-                        break;
-
-                }
-            }
-        }catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        return res;
-    }
-
-    private AccessControlList createAllPermission(String bucketName) {
-        AccessControlList res = new AccessControlList();
-        final Owner owner = getOwner(bucketName);
-        res.setOwner(owner);
-        Grantee grant = new Grantee() {
-            @Override
-            public void setIdentifier(String id) {
-                //
-            }
-
-            @Override
-            public String getTypeIdentifier() {
-                return owner.getId();
-            }
-
-            @Override
-            public String getIdentifier() {
-                return owner.getId();
-            }
-        };
-
-        res.grantPermission(grant, Permission.FullControl);
-        res.grantPermission(grant, Permission.Read);
-        res.grantPermission(grant, Permission.Write);
-        return res;
-    }
-
-    public AccessControlList createReadOnly(String bucketName) {
-        return createReadOnly(getOwner(bucketName));
-    }
-
-    public AccessControlList createReadOnly(final Owner owner) {
-        AccessControlList res = new AccessControlList();
-        res.setOwner(owner);
-        Grantee grant = new Grantee() {
-            @Override
-            public void setIdentifier(String id) {
-                //
-            }
-
-            @Override
-            public String getTypeIdentifier() {
-                return owner.getId();
-            }
-
-            @Override
-            public String getIdentifier() {
-                return owner.getId();
-            }
-        };
-        res.grantPermission(grant, Permission.Read);
-        return res;
+        return new S3Element(object, dir);
     }
 
     private Path find(String bucketName, final String key) {
@@ -641,12 +503,10 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
 
         private S3Object s3Object;
         private boolean directory;
-        private AccessControlList permission;
 
-        public S3Element(S3Object s3Object, AccessControlList permission, boolean directory) {
+        public S3Element(S3Object s3Object, boolean directory) {
             this.s3Object = s3Object;
             this.directory = directory;
-            this.permission = permission;
         }
 
         public S3Object getS3Object() {
@@ -657,20 +517,12 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
             this.s3Object = s3Object;
         }
 
-        public AccessControlList getPermission() {
-            return permission;
-        }
-
         public boolean isDirectory() {
             return directory;
         }
 
         public void setDirectory(boolean directory) {
             this.directory = directory;
-        }
-
-        public void setPermission(AccessControlList permission) {
-            this.permission = permission;
         }
 
         @Override
@@ -882,61 +734,6 @@ public class AmazonS3ClientMock extends AbstractAmazonS3 {
 
     @Override
     public Bucket createBucket(String bucketName, String region) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public AccessControlList getObjectAcl(String bucketName, String key, String versionId) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public AccessControlList getObjectAcl(GetObjectAclRequest getObjectAclRequest) throws AmazonClientException {
-        return null;
-    }
-
-    @Override
-    public void setObjectAcl(String bucketName, String key, AccessControlList acl) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setObjectAcl(String bucketName, String key, CannedAccessControlList acl) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setObjectAcl(String bucketName, String key, String versionId, AccessControlList acl) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setObjectAcl(String bucketName, String key, String versionId, CannedAccessControlList acl) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setObjectAcl(SetObjectAclRequest setObjectAclRequest) throws AmazonClientException {
-
-    }
-
-    @Override
-    public void setBucketAcl(SetBucketAclRequest setBucketAclRequest) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public AccessControlList getBucketAcl(GetBucketAclRequest getBucketAclRequest) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setBucketAcl(String bucketName, AccessControlList acl) throws AmazonClientException {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setBucketAcl(String bucketName, CannedAccessControlList acl) throws AmazonClientException {
         throw new UnsupportedOperationException();
     }
 
