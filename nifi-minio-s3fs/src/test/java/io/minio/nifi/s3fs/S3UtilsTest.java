@@ -45,10 +45,6 @@ public class S3UtilsTest extends S3UnitTestBase {
         assertEquals(null, file1ObjectSummary.getETag());
         assertEquals("file1", file1ObjectSummary.getKey());
         assertNotNull(file1ObjectSummary.getLastModified());
-        Owner owner = file1ObjectSummary.getOwner();
-        assertNotNull(owner);
-        assertEquals("Mock", owner.getDisplayName());
-        assertEquals("1", owner.getId());
         assertEquals(19, file1ObjectSummary.getSize());
     }
 
@@ -59,19 +55,6 @@ public class S3UtilsTest extends S3UnitTestBase {
         S3Path file1 = (S3Path) root.resolve("file1");
         getS3ObjectSummary(file1);
     }
-
-    @Test(expected = AmazonS3Exception.class)
-    public void getS3ObjectSummary500() throws IOException {
-        AmazonS3ClientMock client = AmazonS3MockFactory.getAmazonClientMock();
-        AmazonS3Exception toBeThrown = new AmazonS3Exception("We messed up");
-        toBeThrown.setStatusCode(500);
-        doThrow(toBeThrown).when(client).getObjectAcl("bucket", "file2");
-        S3Path root = fileSystem.getPath("/bucket");
-        S3Path file2 = (S3Path) root.resolve("file2");
-        Files.createFile(file2);
-        getS3ObjectSummary(file2);
-    }
-
 
     public S3ObjectSummary getS3ObjectSummary(S3Path s3Path) throws NoSuchFileException {
         return new S3Utils().getS3ObjectSummary(s3Path);

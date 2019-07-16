@@ -41,8 +41,6 @@ public class S3Utils {
             result.setKey(key);
             result.setLastModified(metadata.getLastModified());
             result.setSize(metadata.getContentLength());
-            AccessControlList objectAcl = client.getObjectAcl(bucketName, key);
-            result.setOwner(objectAcl.getOwner());
             return result;
         } catch (AmazonS3Exception e) {
             if (e.getStatusCode() != 404)

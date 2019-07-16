@@ -16,9 +16,14 @@ Add following entries in `$NIFI_HOME/conf/nifi.properties`
 nifi.content.repository.implementation=io.minio.nifi.MinIORepository
 nifi.content.claim.max.appendable.size=10 MB
 nifi.content.claim.max.flow.files=100
+# S3 specific settings
+nifi.content.repository.s3_endpoint=s3://play.min.io/
+nifi.content.repository.s3_access_key=Q3AM3UQ867SPQQA43P2F
+nifi.content.repository.s3_secret_key=zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
+nifi.content.repository.s3_ssl_enabled=true
+nifi.content.repository.s3_path_style_access=true
 nifi.content.repository.directory.default=/nifiminio
 nifi.content.repository.archive.enabled=true
-nifi.content.repository.always.sync=false
 nifi.content.viewer.url=../nifi-content-viewer/
 ...
 ```

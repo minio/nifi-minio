@@ -81,6 +81,12 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableMap;
 
+import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.amazonaws.services.s3.model.S3Object;
+import com.amazonaws.services.s3.model.GetObjectRequest;
+
+import io.minio.nifi.s3fs.S3Path;
+
 /**
  * Is thread safe
  *
@@ -134,14 +140,17 @@ public class MinIORepository implements ContentRepository {
     // guarded by synchronizing on this
     private final AtomicLong oldestArchiveDate = new AtomicLong(0L);
 
-    Map<String, ?> s3Env = ImmutableMap.<String, Object> builder()
-        .put(io.minio.nifi.s3fs.AmazonS3Factory.ACCESS_KEY, "Q3AM3UQ867SPQQA43P2F")
-        .put(io.minio.nifi.s3fs.AmazonS3Factory.SECRET_KEY, "zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG")
-        .put(io.minio.nifi.s3fs.AmazonS3Factory.PROTOCOL, "HTTPS")
-        .put(io.minio.nifi.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS, "true").build();
-
     private final FileSystem s3fs;
     private final NiFiProperties nifiProperties;
+
+    /**
+     * NiFi MinIO specific settings
+     */
+    private final String NIFI_S3_ENDPOINT = "nifi.content.repository.s3_endpoint";
+    private final String NIFI_S3_ACCESS_KEY = "nifi.content.repository.s3_access_key";
+    private final String NIFI_S3_SECRET_KEY = "nifi.content.repository.s3_secret_key";
+    private final String NIFI_S3_SSL_ENABLED = "nifi.content.repository.s3_ssl_enabled";
+    private final String NIFI_S3_PATH_STYLE_ACCESS = "nifi.content.repository.s3_path_style_access";
 
     /**
      * Default no args constructor for service loading only
@@ -162,8 +171,24 @@ public class MinIORepository implements ContentRepository {
 
     public MinIORepository(final NiFiProperties nifiProperties) throws IOException {
         this.nifiProperties = nifiProperties;
-        this.s3fs = FileSystems.newFileSystem(URI.create("s3://play.min.io/"),
-                                              s3Env, Thread.currentThread().getContextClassLoader());
+
+        String protocol = "HTTP";
+        String enableSSL = nifiProperties.getProperty(NIFI_S3_SSL_ENABLED);
+        if ("true".equalsIgnoreCase(enableSSL)) {
+            protocol = "HTTPS";
+        }
+
+        Map<String, ?> s3Env = ImmutableMap.<String, Object> builder()
+            .put(io.minio.nifi.s3fs.AmazonS3Factory.ACCESS_KEY,
+                 nifiProperties.getProperty(NIFI_S3_ACCESS_KEY))
+            .put(io.minio.nifi.s3fs.AmazonS3Factory.SECRET_KEY,
+                 nifiProperties.getProperty(NIFI_S3_SECRET_KEY))
+            .put(io.minio.nifi.s3fs.AmazonS3Factory.PROTOCOL, protocol)
+            .put(io.minio.nifi.s3fs.AmazonS3Factory.PATH_STYLE_ACCESS,
+                 nifiProperties.getProperty(NIFI_S3_PATH_STYLE_ACCESS)).build();
+
+        URI s3Uri = URI.create(nifiProperties.getProperty(NIFI_S3_ENDPOINT));
+        this.s3fs = FileSystems.newFileSystem(s3Uri, s3Env, Thread.currentThread().getContextClassLoader());
 
         // determine the file repository paths and ensure they exist
         final Map<String, Path> fileRepositoryPaths = new HashMap<>();
@@ -175,7 +200,8 @@ public class MinIORepository implements ContentRepository {
 
         this.maxFlowFilesPerClaim = nifiProperties.getMaxFlowFilesPerClaim();
         this.writableClaimQueue  = new LinkedBlockingQueue<>(maxFlowFilesPerClaim);
-        final long configuredAppendableClaimLength = DataUnit.parseDataSize(nifiProperties.getMaxAppendableClaimSize(), DataUnit.B).longValue();
+        final long configuredAppendableClaimLength = DataUnit.parseDataSize(nifiProperties.getMaxAppendableClaimSize(),
+                                                                            DataUnit.B).longValue();
         final long appendableClaimLengthCap = DataUnit.parseDataSize(APPENDABLE_CLAIM_LENGTH_CAP, DataUnit.B).longValue();
         if (configuredAppendableClaimLength > appendableClaimLengthCap) {
             LOG.warn("Configured property '{}' with value {} exceeds cap of {}. Setting value to {}",
@@ -587,11 +613,7 @@ public class MinIORepository implements ContentRepository {
 
         try (final InputStream in = read(claim);
              final OutputStream os = Files.newOutputStream(destination);) {
-            if (offset > 0) {
-                StreamUtils.skip(in, offset);
-            }
-            StreamUtils.copy(in, os, length);
-            return length;
+            return StreamUtils.copy(in, os);
         }
     }
 
@@ -618,16 +640,8 @@ public class MinIORepository implements ContentRepository {
         if (offset == 0 && length == claimSize) {
             return exportTo(claim, destination);
         }
-        try (final InputStream in = read(claim)) {
-            StreamUtils.skip(in, offset);
-            final byte[] buffer = new byte[8192];
-            int len;
-            long copied = 0L;
-            while ((len = in.read(buffer, 0, (int) Math.min(length - copied, buffer.length))) > 0) {
-                destination.write(buffer, 0, len);
-                copied += len;
-            }
-            return copied;
+        try (final InputStream in = read(claim, offset, length)) {
+            return StreamUtils.copy(in, destination);
         }
     }
 
@@ -645,34 +659,58 @@ public class MinIORepository implements ContentRepository {
         return claim.getLength();
     }
 
-    @Override
-    public InputStream read(final ContentClaim claim) throws IOException {
+    public InputStream read(final ContentClaim claim, long offset, long length) throws IOException, NoSuchFileException {
         if (claim == null) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        final InputStream is = Files.newInputStream(getPath(claim, true));
-        if (claim.getOffset() > 0L) {
-            try {
-                StreamUtils.skip(is, claim.getOffset());
-            } catch (IOException ioe) {
-                IOUtils.closeQuietly(is);
-                throw ioe;
-            }
 
+        Path path = getPath(claim, true);
+        S3Path s3Path = (S3Path) path;
+        String key = s3Path.getKey();
+
+        try {
+            GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
+                .withRange(offset, offset+length-1);
+            S3Object object = s3Path.getFileSystem().getClient().getObject(req);
+            InputStream res = object.getObjectContent();
+
+            if (res == null)
+                throw new IOException(String.format("The specified path is a directory: %s", path));
+
+            return res;
+        } catch (AmazonS3Exception e) {
+            if (e.getStatusCode() == 404)
+                throw new NoSuchFileException(path.toString());
+            // otherwise throws a generic IO exception
+            throw new IOException(String.format("Cannot access file: %s", path), e);
+        }
+    }
+
+    @Override
+    public InputStream read(final ContentClaim claim) throws IOException, NoSuchFileException {
+        if (claim == null) {
+            return new ByteArrayInputStream(new byte[0]);
         }
 
-        // A claim length of -1 indicates that the claim is still being written to and we don't know
-        // the length. In this case, we don't limit the Input Stream. If the Length has been populated, though,
-        // it is possible that the Length could then be extended. However, we do want to avoid ever allowing the
-        // stream to read past the end of the Content Claim. To accomplish this, we use a LimitedInputStream but
-        // provide a LongSupplier for the length instead of a Long value. this allows us to continue reading until
-        // we get to the end of the Claim, even if the Claim grows. This may happen, for instance, if we obtain an
-        // InputStream for this claim, then read from it, write more to the claim, and then attempt to read again. In
-        // such a case, since we have written to that same Claim, we should still be able to read those bytes.
-        if (claim.getLength() >= 0) {
-            return new LimitedInputStream(is, claim::getLength);
-        } else {
-            return is;
+        Path path = getPath(claim, true);
+        S3Path s3Path = (S3Path) path;
+        String key = s3Path.getKey();
+
+        try {
+            GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
+                .withRange(claim.getOffset(), claim.getOffset()+claim.getLength()-1);
+            S3Object object = s3Path.getFileSystem().getClient().getObject(req);
+            InputStream res = object.getObjectContent();
+
+            if (res == null)
+                throw new IOException(String.format("The specified path is a directory: %s", path));
+
+            return res;
+        } catch (AmazonS3Exception e) {
+            if (e.getStatusCode() == 404)
+                throw new NoSuchFileException(path.toString());
+            // otherwise throws a generic IO exception
+            throw new IOException(String.format("Cannot access file: %s", path), e);
         }
     }
 
