@@ -70,8 +70,8 @@ import org.apache.nifi.controller.repository.io.LimitedInputStream;
 import org.apache.nifi.engine.FlowEngine;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.stream.io.ByteCountingOutputStream;
-import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.stream.io.SynchronizedByteCountingOutputStream;
+import org.apache.nifi.stream.io.StreamUtils;
 import org.apache.nifi.util.FormatUtils;
 import org.apache.nifi.util.NiFiProperties;
 import org.apache.nifi.util.StopWatch;
@@ -93,9 +93,15 @@ import io.minio.nifi.s3fs.S3Path;
  */
 public class MinIORepository implements ContentRepository {
 
+    /**
+     * The default buffer size ({@value}) to use in copy methods.
+     */
+    private static final int DEFAULT_BUFFER_SIZE = 1024 * 32;
+
     public static final int SECTIONS_PER_CONTAINER = 1024;
     public static final long MIN_CLEANUP_INTERVAL_MILLIS = 1000;
     public static final String ARCHIVE_DIR_NAME = "archive";
+
     // 100 MB cap for the configurable NiFiProperties.MAX_APPENDABLE_CLAIM_SIZE property to prevent
     // unnecessarily large resource claim files
     public static final String APPENDABLE_CLAIM_LENGTH_CAP = "100 MB";
@@ -244,7 +250,6 @@ public class MinIORepository implements ContentRepository {
         }
 
         maxArchiveMillis = 0L;
-        initializeRepository();
         containerCleanupExecutor = new FlowEngine(containers.size(), "Cleanup MinIORepository Container", true);
     }
 
@@ -283,26 +288,6 @@ public class MinIORepository implements ContentRepository {
         final String trimmed = value.trim();
         final String percentage = trimmed.substring(0, trimmed.length() - 1);
         return Integer.parseInt(percentage) / 100D;
-    }
-
-    private synchronized void initializeRepository() throws IOException {
-        final Map<String, Path> realPathMap = new HashMap<>();
-        final ExecutorService executor = Executors.newFixedThreadPool(containers.size());
-        final List<Future<Long>> futures = new ArrayList<>();
-
-        // Run through each of the containers. For each container, create the sections if necessary.
-        // Then, we need to scan through the archived data so that we can determine what the oldest
-        // archived data is, so that we know when we have to start aging data off.
-        for (final Map.Entry<String, Path> container : containers.entrySet()) {
-            final String containerName = container.getKey();
-            final ContainerState containerState = containerStateMap.get(containerName);
-            final Path containerPath = container.getValue();
-            final Path realPath = Files.createDirectories(containerPath).toRealPath();
-            realPathMap.put(containerName, realPath);
-        }
-
-        containers.clear();
-        containers.putAll(realPathMap);
     }
 
     @Override
@@ -371,17 +356,7 @@ public class MinIORepository implements ContentRepository {
         }
 
         // Create the Path that points to the data
-        Path resolvedPath = containerPath.resolve(resourceClaim.getSection()).resolve(resourceClaim.getId());
-
-        // If the data does not exist, create a Path that points to where the data would exist in the archive directory.
-        if (!Files.exists(resolvedPath)) {
-            resolvedPath = getArchivePath(claim.getResourceClaim());
-
-            if (verifyExists && !Files.exists(resolvedPath)) {
-                throw new ContentNotFoundException(claim);
-            }
-        }
-        return resolvedPath;
+        return containerPath.resolve(resourceClaim.getSection()).resolve(resourceClaim.getId());
     }
 
     @Override
@@ -424,7 +399,8 @@ public class MinIORepository implements ContentRepository {
             // at the same time because we will call create() to get the claim before we write to it,
             // and when we call create(), it will remove it from the Queue, which means that no other
             // thread will get the same Claim until we've finished writing to it.
-            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(Files.newOutputStream(getPath(resourceClaim)));
+            final OutputStream os = Files.newOutputStream(getPath(resourceClaim));
+            ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(os);
             writableClaimStreams.put(resourceClaim, claimStream);
 
             incrementClaimantCount(resourceClaim, true);
@@ -490,12 +466,6 @@ public class MinIORepository implements ContentRepository {
             return false;
         }
 
-        Path path = null;
-        try {
-            path = getPath(claim);
-        } catch (final ContentNotFoundException cnfe) {
-        }
-
         // Ensure that we have no writable claim streams for this resource claim
         final ByteCountingOutputStream bcos = writableClaimStreams.remove(claim);
 
@@ -508,7 +478,7 @@ public class MinIORepository implements ContentRepository {
         }
 
         try {
-            Files.deleteIfExists(path);
+            Files.deleteIfExists(getPath(claim));
         } catch (final IOException e) {
         }
         return true;
@@ -521,13 +491,16 @@ public class MinIORepository implements ContentRepository {
         }
 
         final ContentClaim newClaim = create(lossTolerant);
-        try (final InputStream in = read(original);
-                final OutputStream out = write(newClaim)) {
-            StreamUtils.copy(in, out);
+        final InputStream in = read(original);
+        final OutputStream os = write(newClaim);
+        try {
+            IOUtils.copy(in, os, DEFAULT_BUFFER_SIZE);
         } catch (final IOException ioe) {
             decrementClaimantCount(newClaim);
             remove(newClaim);
             throw ioe;
+        } finally {
+            IOUtils.closeQuietly(in, os);
         }
         return newClaim;
     }
@@ -545,10 +518,14 @@ public class MinIORepository implements ContentRepository {
 
             int i = 0;
             for (final ContentClaim claim : claims) {
-                try (final InputStream in = read(claim)) {
-                    StreamUtils.copy(in, out);
+                final InputStream in = read(claim);
+                try {
+                    IOUtils.copy(in, out, DEFAULT_BUFFER_SIZE);
+                } catch (IOException e) {
+                    throw e;
+                } finally {
+                    IOUtils.closeQuietly(in, null);
                 }
-
                 if (++i < claims.size() && demarcator != null) {
                     out.write(demarcator);
                 }
@@ -572,7 +549,7 @@ public class MinIORepository implements ContentRepository {
     @Override
     public long importFrom(final InputStream content, final ContentClaim claim) throws IOException {
         try (final OutputStream out = write(claim, false)) {
-            return StreamUtils.copy(content, out);
+            return IOUtils.copy(content, out, DEFAULT_BUFFER_SIZE);
         }
     }
 
@@ -586,9 +563,14 @@ public class MinIORepository implements ContentRepository {
             return 0L;
         }
 
-        try (final InputStream in = read(claim);
-             final OutputStream os = Files.newOutputStream(destination)) {
-            return StreamUtils.copy(in, os);
+        final InputStream in = read(claim);
+        final OutputStream os = Files.newOutputStream(destination);
+        try {
+            return IOUtils.copy(in, os, DEFAULT_BUFFER_SIZE);
+        } catch (IOException e) {
+            throw e;
+        } finally {
+            IOUtils.closeQuietly(in, os);
         }
     }
 
@@ -605,15 +587,14 @@ public class MinIORepository implements ContentRepository {
             return 0L;
         }
 
-        final long claimSize = size(claim);
-        if (offset > claimSize) {
-            throw new IllegalArgumentException("Offset of " + offset + " exceeds claim size of " + claimSize);
-
-        }
-
-        try (final InputStream in = read(claim);
-             final OutputStream os = Files.newOutputStream(destination);) {
-            return StreamUtils.copy(in, os);
+        final InputStream in = read(claim, offset, length);
+        final OutputStream os = Files.newOutputStream(destination);
+        try {
+            return IOUtils.copy(in, os, DEFAULT_BUFFER_SIZE);
+        } catch (IOException e) {
+            throw e;
+        } finally {
+            IOUtils.closeQuietly(in, os);
         }
     }
 
@@ -623,8 +604,13 @@ public class MinIORepository implements ContentRepository {
             return 0L;
         }
 
-        try (final InputStream in = read(claim)) {
-            return StreamUtils.copy(in, destination);
+        final InputStream in = read(claim);
+        try {
+            return IOUtils.copy(in, destination, DEFAULT_BUFFER_SIZE);
+        } catch (IOException e) {
+            throw e;
+        } finally {
+            IOUtils.closeQuietly(in, null);
         }
     }
 
@@ -633,15 +619,13 @@ public class MinIORepository implements ContentRepository {
         if (offset < 0) {
             throw new IllegalArgumentException("offset cannot be negative");
         }
-        final long claimSize = size(claim);
-        if (offset > claimSize) {
-            throw new IllegalArgumentException("offset of " + offset + " exceeds claim size of " + claimSize);
-        }
-        if (offset == 0 && length == claimSize) {
-            return exportTo(claim, destination);
-        }
-        try (final InputStream in = read(claim, offset, length)) {
-            return StreamUtils.copy(in, destination);
+        final InputStream in = read(claim);
+        try {
+            return IOUtils.copy(in, destination, DEFAULT_BUFFER_SIZE);
+        } catch (IOException e) {
+            throw e;
+        } finally {
+            IOUtils.closeQuietly(in, null);
         }
     }
 
@@ -659,21 +643,35 @@ public class MinIORepository implements ContentRepository {
         return claim.getLength();
     }
 
-    public InputStream read(final ContentClaim claim, long offset, long length) throws IOException, NoSuchFileException {
-        if (claim == null) {
-            return new ByteArrayInputStream(new byte[0]);
-        }
+    private InputStream readObject(final ContentClaim claim, long offset, long length)
+        throws IOException, NoSuchFileException {
 
         Path path = getPath(claim, true);
         S3Path s3Path = (S3Path) path;
         String key = s3Path.getKey();
-
-        try {
-            GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
-                .withRange(offset, offset+length-1);
-            S3Object object = s3Path.getFileSystem().getClient().getObject(req);
+        GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
+            .withRange(offset, offset+length-1);
+        try (S3Object object = s3Path.getFileSystem().getClient().getObject(req)) {
             InputStream res = object.getObjectContent();
+            if (res == null)
+                throw new IOException(String.format("The specified path is a directory: %s", path));
 
+            return res;
+        } catch (AmazonS3Exception e) {
+            if (e.getStatusCode() != 404) {
+                throw new IOException(String.format("Cannot access file: %s", path), e);
+            }
+        }
+
+        // getPath failed look for archivePath.
+        path = getArchivePath(claim.getResourceClaim());
+        s3Path = (S3Path) path;
+        key = s3Path.getKey();
+        req = new GetObjectRequest(s3Path.getFileStore().name(), key)
+            .withRange(offset, offset+length-1);
+
+        try (S3Object object = s3Path.getFileSystem().getClient().getObject(req)) {
+            InputStream res = object.getObjectContent();
             if (res == null)
                 throw new IOException(String.format("The specified path is a directory: %s", path));
 
@@ -681,9 +679,16 @@ public class MinIORepository implements ContentRepository {
         } catch (AmazonS3Exception e) {
             if (e.getStatusCode() == 404)
                 throw new NoSuchFileException(path.toString());
-            // otherwise throws a generic IO exception
             throw new IOException(String.format("Cannot access file: %s", path), e);
         }
+    }
+
+    public InputStream read(final ContentClaim claim, long offset, long length) throws IOException, NoSuchFileException {
+        if (claim == null) {
+            return new ByteArrayInputStream(new byte[0]);
+        }
+
+        return readObject(claim, offset, length);
     }
 
     @Override
@@ -692,26 +697,7 @@ public class MinIORepository implements ContentRepository {
             return new ByteArrayInputStream(new byte[0]);
         }
 
-        Path path = getPath(claim, true);
-        S3Path s3Path = (S3Path) path;
-        String key = s3Path.getKey();
-
-        try {
-            GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
-                .withRange(claim.getOffset(), claim.getOffset()+claim.getLength()-1);
-            S3Object object = s3Path.getFileSystem().getClient().getObject(req);
-            InputStream res = object.getObjectContent();
-
-            if (res == null)
-                throw new IOException(String.format("The specified path is a directory: %s", path));
-
-            return res;
-        } catch (AmazonS3Exception e) {
-            if (e.getStatusCode() == 404)
-                throw new NoSuchFileException(path.toString());
-            // otherwise throws a generic IO exception
-            throw new IOException(String.format("Cannot access file: %s", path), e);
-        }
+        return readObject(claim, claim.getOffset(), claim.getLength());
     }
 
     @Override
@@ -909,6 +895,9 @@ public class MinIORepository implements ContentRepository {
 
                         try {
                             while (true) {
+                                if (claimQueue == null) {
+                                    break;
+                                }
                                 if (claimQueue.offer(claim, 10, TimeUnit.MINUTES)) {
                                     break;
                                 } else {
