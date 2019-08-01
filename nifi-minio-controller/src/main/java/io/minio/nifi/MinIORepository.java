@@ -650,30 +650,8 @@ public class MinIORepository implements ContentRepository {
         String key = s3Path.getKey();
         GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
             .withRange(offset, offset+length-1);
-        S3Object object = s3Path.getFileSystem().getClient().getObject(req);
         try {
-            InputStream res = object.getObjectContent();
-            if (res == null)
-                throw new IOException(String.format("The specified path is a directory: %s", path));
-
-            return res;
-        } catch (AmazonS3Exception e) {
-            if (e.getStatusCode() != 404) {
-                throw new IOException(String.format("Cannot access file: %s", path), e);
-            }
-        }
-
-        object.close();
-
-        // getPath failed look for archivePath.
-        path = getArchivePath(claim.getResourceClaim());
-        s3Path = (S3Path) path;
-        key = s3Path.getKey();
-        req = new GetObjectRequest(s3Path.getFileStore().name(), key)
-            .withRange(offset, offset+length-1);
-        object = s3Path.getFileSystem().getClient().getObject(req);
-        try {
-            InputStream res = object.getObjectContent();
+            InputStream res = s3Path.getFileSystem().getClient().getObject(req).getObjectContent();
             if (res == null)
                 throw new IOException(String.format("The specified path is a directory: %s", path));
 
@@ -683,14 +661,40 @@ public class MinIORepository implements ContentRepository {
                 throw new NoSuchFileException(path.toString());
             throw new IOException(String.format("Cannot access file: %s", path), e);
         }
+
+        // TODO: support reading archive path, when archiving is implemented.
+        // object.close();
+
+        // // getPath failed look for archivePath.
+        // path = getArchivePath(claim.getResourceClaim());
+        // s3Path = (S3Path) path;
+        // key = s3Path.getKey();
+        // req = new GetObjectRequest(s3Path.getFileStore().name(), key)
+        //     .withRange(offset, offset+length-1);
+        // object = s3Path.getFileSystem().getClient().getObject(req);
+        // try {
+        //     InputStream res = object.getObjectContent();
+        //     if (res == null)
+        //         throw new IOException(String.format("The specified path is a directory: %s", path));
+
+        //     return res;
+        // } catch (AmazonS3Exception e) {
+        //     if (e.getStatusCode() == 404)
+        //         throw new NoSuchFileException(path.toString());
+        //     throw new IOException(String.format("Cannot access file: %s", path), e);
+        // }
     }
 
-    public InputStream read(final ContentClaim claim, long offset, long length) throws IOException, NoSuchFileException {
+    public InputStream read(final ContentClaim claim, long offset, long length) throws IOException {
         if (claim == null) {
             return new ByteArrayInputStream(new byte[0]);
         }
 
-        return readObject(claim, offset, length);
+        try {
+            return readObject(claim, offset, length);
+        } catch (NoSuchFileException e) {
+            return new ByteArrayInputStream(new byte[0]);
+        }
     }
 
     @Override
@@ -699,7 +703,11 @@ public class MinIORepository implements ContentRepository {
             return new ByteArrayInputStream(new byte[0]);
         }
 
-        return readObject(claim, claim.getOffset(), claim.getLength());
+        try {
+            return readObject(claim, claim.getOffset(), claim.getLength());
+        } catch (NoSuchFileException e) {
+            return new ByteArrayInputStream(new byte[0]);
+        }
     }
 
     @Override
