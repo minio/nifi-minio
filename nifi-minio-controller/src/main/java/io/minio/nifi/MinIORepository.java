@@ -66,7 +66,6 @@ import org.apache.nifi.controller.repository.claim.ContentClaim;
 import org.apache.nifi.controller.repository.claim.ResourceClaim;
 import org.apache.nifi.controller.repository.claim.ResourceClaimManager;
 import org.apache.nifi.controller.repository.claim.StandardContentClaim;
-import org.apache.nifi.controller.repository.io.LimitedInputStream;
 import org.apache.nifi.engine.FlowEngine;
 import org.apache.nifi.processor.DataUnit;
 import org.apache.nifi.stream.io.ByteCountingOutputStream;
@@ -651,7 +650,8 @@ public class MinIORepository implements ContentRepository {
         String key = s3Path.getKey();
         GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
             .withRange(offset, offset+length-1);
-        try (S3Object object = s3Path.getFileSystem().getClient().getObject(req)) {
+        S3Object object = s3Path.getFileSystem().getClient().getObject(req);
+        try {
             InputStream res = object.getObjectContent();
             if (res == null)
                 throw new IOException(String.format("The specified path is a directory: %s", path));
@@ -663,14 +663,16 @@ public class MinIORepository implements ContentRepository {
             }
         }
 
+        object.close();
+
         // getPath failed look for archivePath.
         path = getArchivePath(claim.getResourceClaim());
         s3Path = (S3Path) path;
         key = s3Path.getKey();
         req = new GetObjectRequest(s3Path.getFileStore().name(), key)
             .withRange(offset, offset+length-1);
-
-        try (S3Object object = s3Path.getFileSystem().getClient().getObject(req)) {
+        object = s3Path.getFileSystem().getClient().getObject(req);
+        try {
             InputStream res = object.getObjectContent();
             if (res == null)
                 throw new IOException(String.format("The specified path is a directory: %s", path));
@@ -820,7 +822,8 @@ public class MinIORepository implements ContentRepository {
                     // writableClaimQueue.offer() means that the ResourceClaim was then reused, which resulted in an endless
                     // loop of NullPointerException's being thrown. As a result, we simply ensure that the Resource Claim does
                     // in fact have an OutputStream associated with it before adding it back to the writableClaimQueue.
-                    final boolean enqueued = writableClaimStreams.get(scc.getResourceClaim()) != null && writableClaimQueue.offer(pair);
+                    final boolean enqueued = (writableClaimStreams.get(scc.getResourceClaim()) != null &&
+                                              writableClaimQueue.offer(pair));
 
                     if (enqueued) {
                         LOG.debug("Claim length less than max; Adding {} back to Writable Claim Queue", this);
