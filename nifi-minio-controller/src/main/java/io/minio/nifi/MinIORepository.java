@@ -57,8 +57,10 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
+
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
+
 import org.apache.nifi.controller.repository.ContentNotFoundException;
 import org.apache.nifi.controller.repository.ContentRepository;
 import org.apache.nifi.controller.repository.RepositoryPurgeException;
@@ -78,6 +80,8 @@ import org.apache.nifi.util.file.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableMap;
 
 import com.amazonaws.services.s3.model.AmazonS3Exception;
@@ -96,7 +100,7 @@ public class MinIORepository implements ContentRepository {
      * The default buffer size ({@value}) to use in copy methods.
      */
     private static final int DEFAULT_BUFFER_SIZE = 1024 * 32;
-
+    private static final long DEFAULT_MAX_S3_CACHE = 10000;
     public static final int SECTIONS_PER_CONTAINER = 1024;
     public static final long MIN_CLEANUP_INTERVAL_MILLIS = 1000;
     public static final String ARCHIVE_DIR_NAME = "archive";
@@ -123,7 +127,8 @@ public class MinIORepository implements ContentRepository {
     // The queue is used to determine which claim to write to and then the corresponding Map can be used to obtain
     // the OutputStream that we can use for writing to the claim.
     private final BlockingQueue<ClaimLengthPair> writableClaimQueue;
-    private final ConcurrentMap<ResourceClaim, ByteCountingOutputStream> writableClaimStreams = new ConcurrentHashMap<>(100);
+    private final ConcurrentMap<ResourceClaim, ByteCountingOutputStream> writableClaimStreams =
+        new ConcurrentHashMap<>(100);
 
     private final boolean archiveData;
     // 1 MB default, as it means that we won't continually write to one
@@ -136,6 +141,9 @@ public class MinIORepository implements ContentRepository {
     private final long maxArchiveMillis;
     private final Map<String, Long> minUsableContainerBytesForArchive = new HashMap<>();
     private final ScheduledExecutorService containerCleanupExecutor;
+
+    // Stores in-memory cache.
+    private final Cache<String, byte[]> cache;
 
     private ResourceClaimManager resourceClaimManager; // effectively final
 
@@ -156,6 +164,7 @@ public class MinIORepository implements ContentRepository {
     private final String NIFI_S3_SECRET_KEY = "nifi.content.repository.s3_secret_key";
     private final String NIFI_S3_SSL_ENABLED = "nifi.content.repository.s3_ssl_enabled";
     private final String NIFI_S3_PATH_STYLE_ACCESS = "nifi.content.repository.s3_path_style_access";
+    private final String NIFI_S3_OBJECT_CACHE = "nifi.content.repository.s3_cache";
 
     /**
      * Default no args constructor for service loading only
@@ -172,6 +181,7 @@ public class MinIORepository implements ContentRepository {
         maxFlowFilesPerClaim = 0;
         writableClaimQueue = null;
         s3fs = null;
+        cache = null;
     }
 
     public MinIORepository(final NiFiProperties nifiProperties) throws IOException {
@@ -180,7 +190,13 @@ public class MinIORepository implements ContentRepository {
         String protocol = "HTTP";
         String enableSSL = nifiProperties.getProperty(NIFI_S3_SSL_ENABLED);
         if ("true".equalsIgnoreCase(enableSSL)) {
-            protocol = "HTTPS";
+            protocol = "HTTPS";        }
+
+        long s3CacheSize = 0L;
+        try {
+            s3CacheSize = Long.parseLong(nifiProperties.getProperty(NIFI_S3_OBJECT_CACHE));
+        } catch (java.lang.NumberFormatException e) {
+            s3CacheSize = DEFAULT_MAX_S3_CACHE;
         }
 
         Map<String, ?> s3Env = ImmutableMap.<String, Object> builder()
@@ -204,6 +220,11 @@ public class MinIORepository implements ContentRepository {
         }
 
         this.maxFlowFilesPerClaim = nifiProperties.getMaxFlowFilesPerClaim();
+        this.cache = CacheBuilder.newBuilder()
+            .maximumSize(s3CacheSize)
+            .expireAfterAccess(30, TimeUnit.MINUTES)
+            .build();
+
         this.writableClaimQueue  = new LinkedBlockingQueue<>(maxFlowFilesPerClaim);
         final long configuredAppendableClaimLength = DataUnit.parseDataSize(nifiProperties.getMaxAppendableClaimSize(),
                                                                             DataUnit.B).longValue();
@@ -648,19 +669,25 @@ public class MinIORepository implements ContentRepository {
         Path path = getPath(claim, true);
         S3Path s3Path = (S3Path) path;
         String key = s3Path.getKey();
-        GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key)
-            .withRange(offset, offset+length-1);
-        try {
-            InputStream res = s3Path.getFileSystem().getClient().getObject(req).getObjectContent();
-            if (res == null)
-                throw new IOException(String.format("The specified path is a directory: %s", path));
 
-            return res;
-        } catch (AmazonS3Exception e) {
-            if (e.getStatusCode() == 404)
-                throw new NoSuchFileException(path.toString());
-            throw new IOException(String.format("Cannot access file: %s", path), e);
+        byte[] bytes = cache.getIfPresent(key);
+        if (bytes == null) {
+            GetObjectRequest req = new GetObjectRequest(s3Path.getFileStore().name(), key);
+            try {
+                InputStream res = s3Path.getFileSystem().getClient().getObject(req).getObjectContent();
+                if (res == null) {
+                    throw new IOException(String.format("The specified path is a directory: %s", path));
+                }
+                bytes = IOUtils.toByteArray(res);
+                cache.put(key, bytes);
+            } catch (AmazonS3Exception e) {
+                if (e.getStatusCode() == 404)
+                    throw new NoSuchFileException(path.toString());
+                throw new IOException(String.format("Cannot access file: %s", path), e);
+            }
         }
+
+        return (InputStream) new ByteArrayInputStream(bytes, (int) offset, (int) length);
 
         // TODO: support reading archive path, when archiving is implemented.
         // object.close();

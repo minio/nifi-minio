@@ -369,11 +369,14 @@ public class S3FileSystemProvider extends FileSystemProvider {
         if (bucket == null) {
             s3Path.getFileSystem().getClient().createBucket(bucketName);
         }
-        // create the object as directory
-        ObjectMetadata metadata = new ObjectMetadata();
-        metadata.setContentLength(0);
         String directoryKey = s3Path.getKey().endsWith("/") ? s3Path.getKey() : s3Path.getKey() + "/";
-        s3Path.getFileSystem().getClient().putObject(bucketName, directoryKey, new ByteArrayInputStream(new byte[0]), metadata);
+        if (!directoryKey.equals("/")) {
+            // create the object as directory
+            ObjectMetadata metadata = new ObjectMetadata();
+            metadata.setContentLength(0);
+            s3Path.getFileSystem().getClient().putObject(bucketName, directoryKey,
+                                                         new ByteArrayInputStream(new byte[0]), metadata);
+        }
     }
 
     @Override
